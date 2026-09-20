@@ -1,4 +1,4 @@
-# lvol — macOS 对数（dB 均匀）输出音量控制
+# lvol — macOS dB 均匀输出音量控制
 
 两个小工具，用来弥补 macOS 音量滑块的缺陷：
 

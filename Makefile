@@ -1,4 +1,4 @@
-# lvol — logarithmic (dB-uniform) output volume for macOS.
+# lvol — dB-uniform output volume for macOS.
 #
 #   lvol       the CLI              (C, ~35 KB, no dependencies)
 #   lvol.app   the desktop-window GUI (Swift/AppKit)

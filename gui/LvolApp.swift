@@ -1,5 +1,5 @@
 /*
- * lvol — a tiny desktop-window app for logarithmic (dB-uniform) output volume.
+ * lvol — a tiny desktop-window app for dB-uniform output volume.
  *
  * It opens a single window holding a slider that drives the default output
  * device's floating-point volume scalar on a dB-uniform scale, so quiet levels

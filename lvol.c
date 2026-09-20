@@ -1,5 +1,5 @@
 /*
- * lvol — logarithmic (dB-uniform) output volume control for macOS.
+ * lvol — dB-uniform output volume control for macOS.
  *
  * Why: the macOS volume slider is (very close to) LINEAR in amplitude.
  * Near the bottom, one percentage step is a huge jump in perceived loudness,
@@ -269,7 +269,7 @@ static double scalar_to_db(Float32 scalar) {
 
 static void usage(void) {
     printf(
-        "lvol — logarithmic (dB-uniform) output volume for macOS\n"
+        "lvol — dB-uniform output volume for macOS\n"
         "\n"
         "usage:\n"
         "  lvol                     show current volume\n"
