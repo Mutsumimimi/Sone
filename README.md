@@ -57,15 +57,24 @@ open ~/Applications/lvol.app
 
 窗口不在前台时不响应——这是应用内的局部快捷键，不是全局热键。
 
+### 设置窗口（`Cmd+,`）
+
+`Cmd+,`（或 App 菜单 → **Settings…**）打开一个设置窗口：
+
+- **dB range**：0–100 刻度覆盖的 dB 跨度，与 CLI 的 `-r` 是同一个含义（默认 60，可调 30–120）。
+  拖动即刻生效：值写进应用自己的 `UserDefaults`（key `rangeDB`），主窗口的滑块位置与数值随新范围立即刷新。
+
+设置窗口是单例的：反复打开只会前置同一个窗口，不会堆叠；关掉后再开也正常。这个设置只作用于 GUI（CLI 的 `lvol` 不读它，行为与以前一致）。
+
 **开机自启**：系统设置 → 通用 → 登录项，把 `~/Applications/lvol.app` 加进去。
 
-### 为什么 `Cmd+Q` / `Cmd+W` 要应用自己提供
+### 为什么 `Cmd+Q` / `Cmd+W` / `Cmd+,` 要应用自己提供
 
 macOS 的 `Cmd` 组合键**不是系统自动分给每个 app 的**，而是由 **app 自己的主菜单**（屏幕顶部那条菜单栏）里的菜单项提供的。每个菜单项可以带一个 `keyEquivalent`（例如 `"q"`）：按下 `Cmd+Q` 时，AppKit 会先在本 app 的主菜单里找带这个等效键的菜单项，找到才执行它绑定的 action（Quit 是 `terminate:`，Close 是 `performClose:`）；找不到就没人处理，系统只会“哔”一声。
 
-绝大多数 app 让人觉得这些键“系统自带”，是因为它们由 Xcode 的 App 模板或 Storyboard/NIB 创建，模板会自带一整套标准菜单（App / File / Edit / Window / Help），里面本来就有 Quit `Cmd+Q`、Close `Cmd+W`。
+绝大多数 app 让人觉得这些键“系统自带”，是因为它们由 Xcode 的 App 模板或 Storyboard/NIB 创建，模板会自带一整套标准菜单（App / File / Edit / Window / Help），里面本来就有 Quit `Cmd+Q`、Close `Cmd+W`、Settings `Cmd+,`。
 
-`lvol` 是**纯代码**搭起来的 AppKit 应用：没有 NIB/Storyboard，也不通过 `NSApplicationMain` 去加载 `MainMenu.xib`，所以菜单栏默认是空的——这时所有 `Cmd` 组合键都没人处理。应用现在自己构造了一个最小主菜单：App 菜单（含 Quit `Cmd+Q`）+ File 菜单（含 Close `Cmd+W`），这两个快捷键因此可用。
+`lvol` 是**纯代码**搭起来的 AppKit 应用：没有 NIB/Storyboard，也不通过 `NSApplicationMain` 去加载 `MainMenu.xib`，所以菜单栏默认是空的——这时所有 `Cmd` 组合键都没人处理。应用现在自己构造了一个最小主菜单：App 菜单（含 Settings `Cmd+,` 和 Quit `Cmd+Q`）+ File 菜单（含 Close `Cmd+W`），这几个快捷键因此可用。
 
 ### 无界面自检
 

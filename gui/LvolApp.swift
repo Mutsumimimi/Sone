@@ -19,7 +19,17 @@ import AudioToolbox
 // CoreAudio helpers
 // ------------------------------------------------------------------
 
-let kRangeDB: Double = 60.0 /* level 0 -> -60 dB, level 100 -> 0 dB */
+let kDefaultRangeDB: Double = 60.0 /* level 0 -> -60 dB, level 100 -> 0 dB */
+
+/* The dB span the 0-100 scale covers. Stored in UserDefaults so the Settings
+ * window can change it; falls back to the CLI's default when unset. Note the
+ * CLI (lvol.c) is untouched - this is GUI-only state. */
+let kRangeDBKey = "rangeDB"
+
+var kRangeDB: Double {
+    let v = UserDefaults.standard.double(forKey: kRangeDBKey)
+    return v > 0 ? v : kDefaultRangeDB
+}
 
 func propAddr(_ sel: AudioObjectPropertySelector,
               _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
@@ -242,12 +252,113 @@ final class ControlViewController: NSViewController {
 }
 
 // ------------------------------------------------------------------
+// settings window
+// ------------------------------------------------------------------
+
+/* A code-built Settings window (NSStackView + Auto Layout, like the main one).
+ * It hosts the settings the GUI exposes over the CLI; for now just the dB
+ * range. Grow it by adding rows to the vertical stack. */
+final class SettingsViewController: NSViewController {
+    private let rangeTitleLabel = NSTextField(labelWithString: "Minimum volume")
+    private let rangeValueLabel = NSTextField(labelWithString: "-- dB")
+    /* The slider runs over negative dB values: its value is the dB that level 0
+     * maps to ("how low the scale reaches"), e.g. -60 dB. It is stored in
+     * UserDefaults as the positive span rangeDB = -sliderValue, so kRangeDB /
+     * kDefaultRangeDB and the level<->scalar mappings stay untouched. */
+    private let rangeSlider = NSSlider(value: -kDefaultRangeDB, minValue: -120, maxValue: -30,
+                                       target: nil, action: nil)
+
+    /* Invoked after a setting changes, so the main window can re-render. */
+    var onChange: (() -> Void)?
+
+    override func loadView() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 108))
+
+        rangeTitleLabel.font = .systemFont(ofSize: 11)
+        rangeTitleLabel.textColor = .secondaryLabelColor
+        rangeTitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        rangeTitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        rangeValueLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        rangeValueLabel.alignment = .right
+        rangeValueLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        rangeSlider.isContinuous = true
+        rangeSlider.target = self
+        rangeSlider.action = #selector(minimumVolumeChanged)
+
+        /* low / high name the two ends of the track, matching the title's style. */
+        let lowLabel = NSTextField(labelWithString: "low")
+        let highLabel = NSTextField(labelWithString: "high")
+        for l in [lowLabel, highLabel] {
+            l.font = .systemFont(ofSize: 11)
+            l.textColor = .secondaryLabelColor
+        }
+        /* A spacer pulls the two labels to opposite ends of the row. */
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let scaleRow = NSStackView(views: [lowLabel, spacer, highLabel])
+        scaleRow.orientation = .horizontal
+        scaleRow.distribution = .fill
+
+        /* Title on the left, live value on the right; the slider and its
+         * low/high scale span the full width below. */
+        let header = NSStackView(views: [rangeTitleLabel, rangeValueLabel])
+        header.orientation = .horizontal
+        header.alignment = .firstBaseline
+        header.distribution = .fill
+
+        let stack = NSStackView(views: [header, rangeSlider, scaleRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: root.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            header.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
+            rangeSlider.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
+            scaleRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
+        ])
+
+        self.view = root
+    }
+
+    /* Re-read on every show: the window is reused, so loadView runs only once. */
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        /* slider value = level 0's dB (negative); storage rangeDB = -sliderValue. */
+        rangeSlider.doubleValue = -kRangeDB
+        updateMinVolumeLabel(-kRangeDB)
+    }
+
+    private func updateMinVolumeLabel(_ db: Double) {
+        rangeValueLabel.stringValue = String(format: "%.0f dB", db)
+    }
+
+    @objc private func minimumVolumeChanged() {
+        let db = rangeSlider.doubleValue.rounded() /* step 1 */
+        rangeSlider.doubleValue = db
+        UserDefaults.standard.set(-db, forKey: kRangeDBKey) /* store the positive span */
+        updateMinVolumeLabel(db)
+        onChange?()
+    }
+}
+
+// ------------------------------------------------------------------
 // app
 // ------------------------------------------------------------------
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let vc = ControlViewController()
     private var window: NSWindow?
+    private var settingsWindow: NSWindow?
     private var timer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -297,6 +408,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
 
+        /* Settings lives in the App menu, above Quit, per the macOS convention
+         * (Cmd+,). target is self, so the action reaches our own method. */
+        let settingsItem = NSMenuItem(title: "Settings\u{2026}",
+                                      action: #selector(showSettings),
+                                      keyEquivalent: ",")
+        settingsItem.keyEquivalentModifierMask = [.command] /* the default, made explicit */
+        settingsItem.target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(settingsItem)
+
         let quitItem = NSMenuItem(title: "Quit " + ProcessInfo.processInfo.processName,
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
@@ -320,6 +441,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(closeItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    /* Cmd+, (and the menu item). Create the Settings window once and reuse it:
+     * a second click must re-front the same window, not stack a new one. */
+    @objc private func showSettings() {
+        if settingsWindow == nil {
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 108),
+                               styleMask: [.titled, .closable],
+                               backing: .buffered, defer: false)
+            win.title = "lvol Settings"
+            let svc = SettingsViewController()
+            /* Re-render the main window with the new range, if it is open. */
+            svc.onChange = { [weak self] in self?.vc.refresh() }
+            win.contentViewController = svc
+            win.isReleasedWhenClosed = false
+            win.center()
+            settingsWindow = win
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /* Clicking the Dock icon reopens the window after it was closed. */
