@@ -187,6 +187,17 @@ struct HotKey: Equatable {
 let kHotKeyUpKey = "hotKeyUp"
 let kHotKeyDownKey = "hotKeyDown"
 
+/* Master on/off for the global hot keys, stored in UserDefaults. Unset means
+ * enabled, so an existing install keeps working after this setting is added
+ * (UserDefaults.bool alone would wrongly read "off" for an absent key). */
+let kHotKeysEnabledKey = "hotKeysEnabled"
+
+var hotKeysEnabled: Bool {
+    let ud = UserDefaults.standard
+    return ud.object(forKey: kHotKeysEnabledKey) == nil ? true
+                                                       : ud.bool(forKey: kHotKeysEnabledKey)
+}
+
 /* Defaults: Option + '=' (shown as '+') raises, Option + '-' lowers - the same
  * +-2 step as the in-window shortcuts. '=' is the physical key; '+' itself
  * would require Shift, so it is the usual stand-in for it. */
@@ -400,6 +411,14 @@ final class HotKeyManager {
     private func unregisterAll() {
         for r in refs { UnregisterEventHotKey(r) }
         refs.removeAll()
+    }
+
+    /* Drop every registration (the master switch's "off" path) without
+     * clearing lastGood*, so a later re-enable can restore the same pair. The
+     * combos stop being claimed system-wide, i.e. they are released for other
+     * apps. No-op if nothing is registered. */
+    func unregisterAllKeys() {
+        unregisterAll()
     }
 
     /* Called from the C callback; run the action on the main thread. */
@@ -665,9 +684,15 @@ final class SettingsViewController: NSViewController {
     private let rangeSlider = NSSlider(value: -kDefaultRangeDB, minValue: -120, maxValue: -30,
                                        target: nil, action: nil)
 
-    /* Global-hot-key recorders, one per direction. */
+    /* Global-hot-key recorders, one per direction, plus a master switch that
+     * unregisters them (freeing the combos for other apps). While it is off
+     * the recorders and the Restore button stay clickable - edits are still
+     * saved - but are dimmed, since they have no live effect. */
     private let upRecorder = ShortcutRecorderButton()
     private let downRecorder = ShortcutRecorderButton()
+    private let hotKeysTitleLabel = NSTextField(labelWithString: "Global hot keys")
+    private let hotKeysSwitch = NSSwitch()
+    private let restoreButton = NSButton(title: "Restore Defaults", target: nil, action: nil)
 
     /* Invoked after a setting changes, so the main window can re-render. */
     var onChange: (() -> Void)?
@@ -677,8 +702,13 @@ final class SettingsViewController: NSViewController {
     var currentHotKeys: (() -> (up: HotKey, down: HotKey))?
     var applyHotKeys: ((HotKey, HotKey) -> Void)?
 
+    /* Wired by the app delegate: read the master switch state, and apply a
+     * change (persist + register/unregister). */
+    var currentHotKeysEnabled: (() -> Bool)?
+    var onToggleHotKeys: ((Bool) -> Void)?
+
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 216))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 248))
 
         rangeTitleLabel.font = .systemFont(ofSize: 11)
         rangeTitleLabel.textColor = .secondaryLabelColor
@@ -725,12 +755,14 @@ final class SettingsViewController: NSViewController {
         downRecorder.onCapture = { [weak self] kc, mods in
             self?.captured(up: false, keyCode: kc, modifiers: mods)
         }
-        let restoreButton = NSButton(title: "Restore Defaults", target: self,
-                                     action: #selector(restoreDefaultHotKeys))
         restoreButton.bezelStyle = .rounded
+        restoreButton.target = self
+        restoreButton.action = #selector(restoreDefaultHotKeys)
+
+        let hotKeysRow = hotKeysToggleRow()
 
         let stack = NSStackView(views: [header, rangeSlider, scaleRow,
-                                        upRow, downRow, restoreButton])
+                                        hotKeysRow, upRow, downRow, restoreButton])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -746,6 +778,7 @@ final class SettingsViewController: NSViewController {
             header.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
             rangeSlider.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
             scaleRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
+            hotKeysRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
             upRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
             downRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
         ])
@@ -773,6 +806,28 @@ final class SettingsViewController: NSViewController {
         return row
     }
 
+    /* The master switch row: "Global hot keys ... [switch]", same style as the
+     * recorder rows above. */
+    private func hotKeysToggleRow() -> NSStackView {
+        hotKeysTitleLabel.font = .systemFont(ofSize: 11)
+        hotKeysTitleLabel.textColor = .secondaryLabelColor
+        hotKeysTitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        hotKeysTitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        hotKeysSwitch.target = self
+        hotKeysSwitch.action = #selector(hotKeysToggled)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [hotKeysTitleLabel, spacer, hotKeysSwitch])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        return row
+    }
+
     /* Re-read on every show: the window is reused, so loadView runs only once. */
     override func viewWillAppear() {
         super.viewWillAppear()
@@ -780,6 +835,9 @@ final class SettingsViewController: NSViewController {
         rangeSlider.doubleValue = -kRangeDB
         updateMinVolumeLabel(-kRangeDB)
         refreshRecorderLabels()
+        let on = currentHotKeysEnabled?() ?? true
+        hotKeysSwitch.state = on ? .on : .off
+        updateHotKeyControlsEnabled(on)
     }
 
     private func updateMinVolumeLabel(_ db: Double) {
@@ -815,6 +873,25 @@ final class SettingsViewController: NSViewController {
         applyHotKeys?(defaultHotKeyUp, defaultHotKeyDown)
         refreshRecorderLabels()
     }
+
+    /* ---- master hot-key switch ---- */
+
+    @objc private func hotKeysToggled() {
+        let on = hotKeysSwitch.state == .on
+        updateHotKeyControlsEnabled(on)
+        onToggleHotKeys?(on)
+    }
+
+    /* Dim the controls that only matter while the hot keys are live, the same
+     * 0.5 alpha the main window uses for its muted slider. They stay enabled:
+     * a captured combo is still saved (and takes effect when switched back
+     * on), it just is not registered while off. */
+    private func updateHotKeyControlsEnabled(_ enabled: Bool) {
+        let a: CGFloat = enabled ? 1.0 : 0.5
+        upRecorder.alphaValue = a
+        downRecorder.alphaValue = a
+        restoreButton.alphaValue = a
+    }
 }
 
 // ------------------------------------------------------------------
@@ -832,6 +909,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
     private var hotKeyUp = defaultHotKeyUp
     private var hotKeyDown = defaultHotKeyDown
+    /* Mirrors the Settings master switch: when false the Carbon hot keys are
+     * not registered at all, so their combos stay free for other apps. */
+    private var hotKeysOn = true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         diag("didFinishLaunching bundleID=\(Bundle.main.bundleIdentifier ?? "nil")")
@@ -869,7 +949,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          * its window is closed, because the window object stays alive. */
         hotKeyUp = loadHotKey(kHotKeyUpKey, fallingBackTo: defaultHotKeyUp)
         hotKeyDown = loadHotKey(kHotKeyDownKey, fallingBackTo: defaultHotKeyDown)
-        applyHotKeys(hotKeyUp, hotKeyDown)
+        hotKeysOn = hotKeysEnabled
+        if hotKeysOn { applyHotKeys(hotKeyUp, hotKeyDown) }
 
         /* Keep the display in sync if the volume changes elsewhere
          * (volume keys, another app) while the window is visible. */
@@ -903,13 +984,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
      * back (with a beep) and UserDefaults keeps the old value, so the next
      * launch does not retry the same broken pair. */
     func setHotKeys(up: HotKey, down: HotKey) {
-        if applyHotKeys(up, down) {
+        if hotKeysOn {
+            if applyHotKeys(up, down) {
+                saveHotKey(kHotKeyUpKey, up)
+                saveHotKey(kHotKeyDownKey, down)
+            }
+        } else {
+            /* Master switch is off: remember the combo but leave the Carbon
+             * hot keys unregistered; it takes effect when switched back on. */
+            hotKeyUp = up
+            hotKeyDown = down
             saveHotKey(kHotKeyUpKey, up)
             saveHotKey(kHotKeyDownKey, down)
         }
     }
 
     func currentHotKeys() -> (up: HotKey, down: HotKey) { (hotKeyUp, hotKeyDown) }
+
+    /* The master switch's write path: persist the flag and, on "on", register
+     * the current pair; on "off", drop every registration so the combos are
+     * released. */
+    func setHotKeysEnabled(_ on: Bool) {
+        hotKeysOn = on
+        UserDefaults.standard.set(on, forKey: kHotKeysEnabledKey)
+        if on {
+            applyHotKeys(hotKeyUp, hotKeyDown)
+        } else {
+            hotKeys.unregisterAllKeys()
+        }
+    }
+
+    func currentHotKeysEnabled() -> Bool { hotKeysOn }
 
     /* A minimal programmatic main menu. AppKit only routes the Cmd+Q
      * shortcut to -[NSApplication terminate:] when a menu item carrying it
@@ -962,7 +1067,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
      * a second click must re-front the same window, not stack a new one. */
     @objc private func showSettings() {
         if settingsWindow == nil {
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 216),
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 248),
                                styleMask: [.titled, .closable],
                                backing: .buffered, defer: false)
             win.title = "lvol Settings"
@@ -976,6 +1081,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             svc.applyHotKeys = { [weak self] up, down in
                 self?.setHotKeys(up: up, down: down)
             }
+            /* Bridge the master switch to the live Carbon registrations. */
+            svc.currentHotKeysEnabled = { [weak self] in self?.currentHotKeysEnabled() ?? true }
+            svc.onToggleHotKeys = { [weak self] on in self?.setHotKeysEnabled(on) }
             win.contentViewController = svc
             win.isReleasedWhenClosed = false
             win.center()
