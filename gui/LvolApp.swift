@@ -318,15 +318,50 @@ func shortcutDisplay(_ hk: HotKey) -> String {
     modifierSymbols(hk.modifiers) + " " + keyName(hk.keyCode)
 }
 
+/* Keyboard auto-repeat timing, in seconds: the delay before a held key first
+ * repeats, then the steady repeat interval. These are read from the same
+ * NSGlobalDomain settings the system's own key handling uses, where
+ * InitialKeyRepeat / KeyRepeat are counts of 1/60 s frames. Anything missing
+ * or outside a sane range falls back to a sensible default, so a bogus value
+ * can never make the repeat spin at 0 s or feel frozen for minutes. */
+func systemKeyRepeatIntervals() -> (delay: TimeInterval, interval: TimeInterval) {
+    let defaultDelay: TimeInterval = 0.4     /* ~24 frames */
+    let defaultInterval: TimeInterval = 0.05 /* ~3 frames */
+    let domain = UserDefaults.standard.persistentDomain(forName: "NSGlobalDomain")
+
+    func seconds(_ key: String, maxFrames: Double) -> TimeInterval? {
+        guard let n = domain?[key] as? NSNumber else { return nil }
+        let frames = n.doubleValue
+        guard frames > 0, frames <= maxFrames else { return nil }
+        return frames / 60.0
+    }
+
+    /* Reject absurd values: a delay over ~3 s or an interval over ~0.5 s would
+     * make holding the key feel broken. (When the user turns keyboard repeat
+     * off, KeyRepeat is set to a huge sentinel, which lands here too and
+     * falls back to the default interval.) */
+    let delay = seconds("InitialKeyRepeat", maxFrames: 180) ?? defaultDelay
+    let interval = seconds("KeyRepeat", maxFrames: 30) ?? defaultInterval
+    return (delay, interval)
+}
+
 /* Owns the Carbon registrations. One shared event handler routes every
  * kEventHotKeyPressed to the closure registered for that hot key's id
- * (1 = up, 2 = down). */
+ * (1 = up, 2 = down) and every kEventHotKeyReleased to that id's repeat
+ * stopper. Holding a key fires once, then repeats on a timer until release. */
 final class HotKeyManager {
     private static let signature = OSType(0x6C_76_6F_6C) /* 'lvol' */
 
     private var refs: [EventHotKeyRef] = []
     private var handlerRef: EventHandlerRef?
     private var actions: [UInt32: () -> Void] = [:]
+
+    /* Auto-repeat while a hot key is held. One timer per hot-key id, so the up
+     * and down keys never interfere with each other, plus the delay/interval
+     * in effect (re-read from NSGlobalDomain on every re-bind). */
+    private var repeatTimers: [UInt32: Timer] = [:]
+    private var repeatDelay: TimeInterval = 0.4
+    private var repeatInterval: TimeInterval = 0.05
 
     /* The last pair that registered cleanly. Kept so a failed re-bind can be
      * rolled back to a working state instead of silently leaving the user
@@ -349,6 +384,12 @@ final class HotKeyManager {
         unregisterAll()
         installHandler()
         actions = [1: upAction, 2: downAction]
+
+        /* Match the hand-feel of the system's own key repeat. Read once per
+         * bind; a change in System Settings is picked up on the next re-bind. */
+        let rate = systemKeyRepeatIntervals()
+        repeatDelay = rate.delay
+        repeatInterval = rate.interval
 
         let upOK = add(up, id: 1)
         let downOK = add(down, id: 2)
@@ -399,17 +440,26 @@ final class HotKeyManager {
 
     private func installHandler() {
         guard handlerRef == nil else { return }
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
-                                 eventKind: UInt32(kEventHotKeyPressed))
+        /* Listen for both edges: pressed starts the action and its repeat,
+         * released stops the repeat. */
+        var spec = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                          eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                          eventKind: UInt32(kEventHotKeyReleased)),
+        ]
         let st = InstallEventHandler(GetEventDispatcherTarget(),
                                      hotKeyEventCallback,
-                                     1, &spec,
+                                     spec.count, &spec,
                                      Unmanaged.passUnretained(self).toOpaque(),
                                      &handlerRef)
         if st != noErr { diag("hotkey InstallEventHandler failed: status=\(st)") }
     }
 
     private func unregisterAll() {
+        /* Cancel any in-flight repeats first, so a freshly unregistered hot key
+         * can never keep stepping the volume. */
+        stopAllRepeats()
         for r in refs { UnregisterEventHotKey(r) }
         refs.removeAll()
     }
@@ -422,14 +472,66 @@ final class HotKeyManager {
         unregisterAll()
     }
 
-    /* Called from the C callback; run the action on the main thread. */
-    fileprivate func dispatch(id: UInt32) {
-        guard let action = actions[id] else { return }
-        if Thread.isMainThread {
-            action()
-        } else {
-            DispatchQueue.main.async(execute: action)
+    /* Called from the C callback for either edge; run on the main thread (the
+     * Carbon handler already is, but the hop keeps us safe if that changes,
+     * and Timer needs a live run loop - the main one). */
+    fileprivate func dispatch(id: UInt32, kind: UInt32) {
+        let run = { [weak self] in
+            guard let self else { return }
+            if kind == UInt32(kEventHotKeyReleased) {
+                self.handleReleased(id: id)
+            } else {
+                self.handlePressed(id: id)
+            }
         }
+        if Thread.isMainThread {
+            run()
+        } else {
+            DispatchQueue.main.async(execute: run)
+        }
+    }
+
+    /* Press: fire once right away (unchanged single-press behaviour), then
+     * start a repeat that fires after the system's initial delay and then at
+     * the steady interval until the key is released. */
+    private func handlePressed(id: UInt32) {
+        guard let action = actions[id] else { return }
+        action()
+        /* A lost "released" would leave a stale timer behind; drop any first so
+         * repeats can never stack up. */
+        stopRepeat(id: id)
+        let delayTimer = Timer.scheduledTimer(withTimeInterval: repeatDelay,
+                                              repeats: false) { [weak self] _ in
+            guard let self, self.actions[id] != nil else { self?.stopRepeat(id: id); return }
+            self.repeatTick(id: id)
+            /* Switch to the steady interval once the first repeat has fired. */
+            let steady = Timer.scheduledTimer(withTimeInterval: self.repeatInterval,
+                                              repeats: true) { [weak self] _ in
+                self?.repeatTick(id: id)
+            }
+            self.repeatTimers[id] = steady
+        }
+        repeatTimers[id] = delayTimer
+    }
+
+    /* Release: stop repeating at once. */
+    private func handleReleased(id: UInt32) {
+        stopRepeat(id: id)
+    }
+
+    /* One repeat step, guarded: if the id is no longer registered, stop. */
+    private func repeatTick(id: UInt32) {
+        guard let action = actions[id] else { stopRepeat(id: id); return }
+        action()
+    }
+
+    private func stopRepeat(id: UInt32) {
+        repeatTimers.removeValue(forKey: id)?.invalidate()
+    }
+
+    private func stopAllRepeats() {
+        for (_, t) in repeatTimers { t.invalidate() }
+        repeatTimers.removeAll()
     }
 }
 
@@ -447,7 +549,7 @@ private let hotKeyEventCallback: EventHandlerUPP = { _, event, userData in
                                &hkID)
     guard st == noErr else { return OSStatus(eventNotHandledErr) }
     let mgr = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
-    mgr.dispatch(id: hkID.id)
+    mgr.dispatch(id: hkID.id, kind: GetEventKind(event))
     return noErr
 }
 
