@@ -1,116 +1,63 @@
-# lvol — macOS dB 均匀输出音量控制
+# lvol — 让 macOS 的音量调节变得细腻
 
-两个小工具，用来弥补 macOS 音量滑块的缺陷：
+macOS 的音量滑块在低音量区太粗：一格可能就是好几 dB 的跳跃。戴耳机想听小一点时，
+要么还是太响，要么一下子跳到静音。
 
-- **`lvol`** — 命令行工具（C，约 34 KB，无运行时依赖）
-- **`lvol.app`** — 桌面窗口小应用（Swift/AppKit）
+lvol 用一个 **dB 均匀**的刻度取代它——每格对应相同的 dB 变化，也就是相同的听感变化——
+并且直接控制设备的浮点音量，能压到系统滑块到不了的更低电平。
 
-## 它解决什么问题
-
-macOS 的音量滑块几乎是线性幅度的（实测：滑块 50% → 底层幅度标量 0.5，滑块 12% → 0.125）。
-线性幅度在低音量区的听感跨度极大：底层幅度从 0.01 到 0.02 就是 **+6 dB** 的跳跃。
-所以当你（尤其是接耳机时）需要**把音量压到很低**时，滑块的每一格都太粗，没法做细节调节。
-
-`lvol` 的做法：
-
-1. 用一个 **dB 均匀**的 0–100 刻度（每 1 格 = 同样的 dB 变化，等于同样的听感变化），低音量区因此可以精细调节；
-2. 直接写设备的**浮点**音量标量，能到达系统滑块无法到达的低电平（例如 −50 dB ≈ 0.32%，滑块最低非零值约 1%）。
-
-## 构建
+## 安装
 
 ```sh
-make            # 产出 ./lvol（CLI）和 build/lvol.app（桌面窗口应用）
+make
+make install-gui        # 装到 ~/Applications/lvol.app
 ```
 
-需要：
+需要 macOS 12 或更新版本，以及 Xcode Command Line Tools。
 
-- **macOS 12 (Monterey) 或更新版本** —— 代码用到 `kAudioObjectPropertyElementMain`，
-  该常量由 macOS 12 SDK 引入（`Info.plist` 里对应 `LSMinimumSystemVersion = 12.0`）；
-- **Xcode Command Line Tools**（`clang` + `swiftc`），不需要完整 Xcode；
-- **Python 3 + [Pillow](https://python-pillow.org/)**（`pip3 install Pillow`），只用于生成应用图标。
-  没装 Pillow 时会跳过图标并给出提示，`./lvol` 和 `lvol.app` 仍能正常构建；
-  只要 CLI 的话直接 `make lvol`。
+## 使用
 
-## 桌面窗口应用（GUI）
+打开 `lvol.app` 拖动滑块即可，数值会同时显示 level / dB / 线性幅度。
+
+- **菜单栏图标** —— 左键唤出窗口；右键有快捷菜单：音量增减、全局快捷键开关、最低音量档位
+- **全局快捷键** —— 默认 `⌥-` / `⌥+` 调音量，**按住可连续调整**；可在设置里录成任意组合
+- **设置** —— `⌘,`
+- 调音量时会**自动解除静音**；设备静音时滑块变灰，但仍然可以拖
+
+窗口聚焦时的快捷键：`+` / `=` 音量 +2 格，`-` 音量 −2 格。
+
+## 设置
+
+`⌘,` 打开设置窗口：
+
+- **Minimum volume** —— 刻度最低能压到多低（−30 … −120 dB）
+- **Volume up / Volume down** —— 录制全局快捷键（至少要带一个修饰键）
+- **Global hot keys** —— 全局快捷键的总开关
+
+## 命令行
 
 ```sh
-make install-gui        # 复制到 ~/Applications/lvol.app
-open ~/Applications/lvol.app # 或手动打开app
+make install            # 装到 /usr/local/bin/lvol
+
+lvol 70                 # 设为刻度 70
+lvol +5  /  lvol -5     # 相对调整
+lvol -30dB              # 按绝对增益设置
+lvol mute / unmute      # 静音 / 取消静音
+lvol list               # 列出输出设备
 ```
 
-启动后会出现一个桌面窗口：
+`lvol -h` 看全部选项（`-d` 指定设备、`-r` 调刻度跨度）。
 
-- **大滑块**：拖动着调音量，刻度是 dB 均匀的（低音量区一样好调）；
-- **数值**：同时显示 `level / dB / 线性%`；
-- **Mute**：静音开关。
+## 打不开？
 
-窗口打开时，如果你用音量键或别的程序改了音量，显示会每 2 秒自动同步。
-
-### 键盘快捷键
-
-窗口聚焦时（应用在前台）：
-
-- `+` 或 `=` —— 音量 +2 格
-- `-` —— 音量 −2 格
-
-p.s. 窗口不在前台时不响应——这是应用内的局部快捷键，不是全局热键。
-
-### 设置窗口（`Cmd+,`）
-
-`Cmd+,` 打开设置窗口。
-
-### 无界面自检
-
-应用二进制也能当命令行用（方便排查）：
+app 是本地签名、未经 Apple 公证，从网上下载后首次打开可能被 Gatekeeper 拦下。
+在 Finder 里**右键 → 打开**，或者：
 
 ```sh
-~/Applications/lvol.app/Contents/MacOS/LvolApp --get      # 打印当前音量
-~/Applications/lvol.app/Contents/MacOS/LvolApp --set 70   # 设为刻度 70
+xattr -dr com.apple.quarantine ~/Applications/lvol.app
 ```
 
-### 卸载
-
-```sh
-make uninstall-gui      # 删除 ~/Applications/lvol.app
-```
-
-## 命令行用法
-
-```sh
-make install            # 安装到 /usr/local/bin/lvol
-
-lvol                 # 查看当前音量（刻度 / dB / 线性幅度）
-lvol 70              # 设置感知刻度 0-100（等步长 = 等 dB）
-lvol +5              # 相对调高 5 格
-lvol -5              # 相对调低 5 格
-lvol -30dB           # 以绝对增益设置（0dB = 最大，可选负数越小越轻）
-lvol mute / unmute   # 静音 / 取消静音
-lvol list            # 列出输出设备
-```
-
-选项：
-
-```sh
-lvol -d "耳机" ...    # 指定设备（按名称子串匹配，默认用系统默认输出设备）
-lvol -r 80  ...       # 调整 0-100 刻度覆盖的 dB 跨度（默认 60 dB）
-lvol -h               # 帮助
-```
-
-刻度含义（默认 `-r 60`）：`level 100 → 0 dB（100%）`，`level 0 → −60 dB（0.1%）`，
-中间线性对应 dB。所以 `level 50 = −30 dB`，`level 70 ≈ −18 dB`。
-
-例：把耳机调到一个合适的低音量
-
-```sh
-$ lvol
-外置耳机   level  69.9/100    -18.1 dB   amp 12.500%
-
-$ lvol -50dB
-外置耳机   level  16.7/100    -50.0 dB   amp  0.316%
-```
-
-注意：系统音量 UI 会显示 0%（因为它只显示整数百分比），但设备实际是 0.316%，
-不是静音——这正是比滑块更低、更细的控制。
+自己 `make` 出来的 app 不会有这个问题。
 
 ## 许可
 
