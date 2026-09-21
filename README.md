@@ -46,7 +46,7 @@ open ~/Applications/lvol.app
 
 窗口打开时，如果你用音量键或别的程序改了音量，显示会每 2 秒自动同步。
 
-关掉窗口后应用仍在 Dock 里——点 Dock 图标即可重新打开；`Cmd+Q` 才真正退出。
+关掉窗口后应用仍在 Dock 里——点 Dock 图标即可重新打开；`Cmd+W` 关闭窗口，`Cmd+Q` 才真正退出。
 
 ### 键盘快捷键
 
@@ -58,6 +58,14 @@ open ~/Applications/lvol.app
 窗口不在前台时不响应——这是应用内的局部快捷键，不是全局热键。
 
 **开机自启**：系统设置 → 通用 → 登录项，把 `~/Applications/lvol.app` 加进去。
+
+### 为什么 `Cmd+Q` / `Cmd+W` 要应用自己提供
+
+macOS 的 `Cmd` 组合键**不是系统自动分给每个 app 的**，而是由 **app 自己的主菜单**（屏幕顶部那条菜单栏）里的菜单项提供的。每个菜单项可以带一个 `keyEquivalent`（例如 `"q"`）：按下 `Cmd+Q` 时，AppKit 会先在本 app 的主菜单里找带这个等效键的菜单项，找到才执行它绑定的 action（Quit 是 `terminate:`，Close 是 `performClose:`）；找不到就没人处理，系统只会“哔”一声。
+
+绝大多数 app 让人觉得这些键“系统自带”，是因为它们由 Xcode 的 App 模板或 Storyboard/NIB 创建，模板会自带一整套标准菜单（App / File / Edit / Window / Help），里面本来就有 Quit `Cmd+Q`、Close `Cmd+W`。
+
+`lvol` 是**纯代码**搭起来的 AppKit 应用：没有 NIB/Storyboard，也不通过 `NSApplicationMain` 去加载 `MainMenu.xib`，所以菜单栏默认是空的——这时所有 `Cmd` 组合键都没人处理。应用现在自己构造了一个最小主菜单：App 菜单（含 Quit `Cmd+Q`）+ File 菜单（含 Close `Cmd+W`），这两个快捷键因此可用。
 
 ### 无界面自检
 
