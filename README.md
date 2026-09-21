@@ -7,9 +7,9 @@
 
 ## 它解决什么问题
 
-macOS 的音量滑块**几乎是线性幅度**的（实测：滑块 50% → 底层幅度标量 0.5，滑块 12% → 0.125）。
+macOS 的音量滑块几乎是线性幅度的（实测：滑块 50% → 底层幅度标量 0.5，滑块 12% → 0.125）。
 线性幅度在低音量区的听感跨度极大：底层幅度从 0.01 到 0.02 就是 **+6 dB** 的跳跃。
-所以当你（尤其是接耳机时）需要把音量压到很低时，滑块的每一格都太粗，没法做细节调节。
+所以当你（尤其是接耳机时）需要**把音量压到很低**时，滑块的每一格都太粗，没法做细节调节。
 
 `lvol` 的做法：
 
@@ -35,18 +35,16 @@ make            # 产出 ./lvol（CLI）和 build/lvol.app（桌面窗口应用�
 
 ```sh
 make install-gui        # 复制到 ~/Applications/lvol.app
-open ~/Applications/lvol.app
+open ~/Applications/lvol.app # 或手动打开app
 ```
 
-启动后会出现一个**桌面窗口**（Dock 里也会有一个图标）：
+启动后会出现一个桌面窗口：
 
 - **大滑块**：拖动着调音量，刻度是 dB 均匀的（低音量区一样好调）；
 - **数值**：同时显示 `level / dB / 线性%`；
 - **Mute**：静音开关。
 
 窗口打开时，如果你用音量键或别的程序改了音量，显示会每 2 秒自动同步。
-
-关掉窗口后应用仍在 Dock 里——点 Dock 图标即可重新打开；`Cmd+W` 关闭窗口，`Cmd+Q` 才真正退出。
 
 ### 键盘快捷键
 
@@ -55,26 +53,11 @@ open ~/Applications/lvol.app
 - `+` 或 `=` —— 音量 +2 格
 - `-` —— 音量 −2 格
 
-窗口不在前台时不响应——这是应用内的局部快捷键，不是全局热键。
+p.s. 窗口不在前台时不响应——这是应用内的局部快捷键，不是全局热键。
 
 ### 设置窗口（`Cmd+,`）
 
-`Cmd+,`（或 App 菜单 → **Settings…**）打开一个设置窗口：
-
-- **dB range**：0–100 刻度覆盖的 dB 跨度，与 CLI 的 `-r` 是同一个含义（默认 60，可调 30–120）。
-  拖动即刻生效：值写进应用自己的 `UserDefaults`（key `rangeDB`），主窗口的滑块位置与数值随新范围立即刷新。
-
-设置窗口是单例的：反复打开只会前置同一个窗口，不会堆叠；关掉后再开也正常。这个设置只作用于 GUI（CLI 的 `lvol` 不读它，行为与以前一致）。
-
-**开机自启**：系统设置 → 通用 → 登录项，把 `~/Applications/lvol.app` 加进去。
-
-### 为什么 `Cmd+Q` / `Cmd+W` / `Cmd+,` 要应用自己提供
-
-macOS 的 `Cmd` 组合键**不是系统自动分给每个 app 的**，而是由 **app 自己的主菜单**（屏幕顶部那条菜单栏）里的菜单项提供的。每个菜单项可以带一个 `keyEquivalent`（例如 `"q"`）：按下 `Cmd+Q` 时，AppKit 会先在本 app 的主菜单里找带这个等效键的菜单项，找到才执行它绑定的 action（Quit 是 `terminate:`，Close 是 `performClose:`）；找不到就没人处理，系统只会“哔”一声。
-
-绝大多数 app 让人觉得这些键“系统自带”，是因为它们由 Xcode 的 App 模板或 Storyboard/NIB 创建，模板会自带一整套标准菜单（App / File / Edit / Window / Help），里面本来就有 Quit `Cmd+Q`、Close `Cmd+W`、Settings `Cmd+,`。
-
-`lvol` 是**纯代码**搭起来的 AppKit 应用：没有 NIB/Storyboard，也不通过 `NSApplicationMain` 去加载 `MainMenu.xib`，所以菜单栏默认是空的——这时所有 `Cmd` 组合键都没人处理。应用现在自己构造了一个最小主菜单：App 菜单（含 Settings `Cmd+,` 和 Quit `Cmd+Q`）+ File 菜单（含 Close `Cmd+W`），这几个快捷键因此可用。
+`Cmd+,` 打开设置窗口。
 
 ### 无界面自检
 
@@ -84,26 +67,6 @@ macOS 的 `Cmd` 组合键**不是系统自动分给每个 app 的**，而是由 
 ~/Applications/lvol.app/Contents/MacOS/LvolApp --get      # 打印当前音量
 ~/Applications/lvol.app/Contents/MacOS/LvolApp --set 70   # 设为刻度 70
 ```
-
-### 应用图标
-
-应用图标由根目录的 `logo_raw.png` 生成：构建时会自动裁掉白边、把图形居中放进 macOS 圆角方块，并输出多尺寸 `.icns`（脚本 `gui/make_icon.py`，纯 Python + Pillow，不依赖 `sips`/`iconutil`）。换图标只需替换 `logo_raw.png` 再 `make`。
-
-### 从 GitHub 下载后打不开（Gatekeeper）
-
-`lvol.app` 用的是 **ad-hoc 签名**（`codesign --force --sign -`），既没有开发者 ID 签名、
-也没有经过 Apple 公证。从 GitHub 下载后，macOS 会给它打上隔离属性
-（`com.apple.quarantine`），首次双击时弹出“无法打开，因为 Apple 无法检查它是否包含
-恶意软件”之类的提示。两种放行方式：
-
-- **Finder 里右键**（或按住 Control 点击）这个 app → **打开**，再在弹窗里点一次 **打开**；
-- 或者去掉隔离属性：
-
-```sh
-xattr -dr com.apple.quarantine ~/Applications/lvol.app
-```
-
-自己在本机 `make` 构建出来的 app 不带隔离属性，也就不会有这个提示。
 
 ### 卸载
 
@@ -136,7 +99,7 @@ lvol -h               # 帮助
 刻度含义（默认 `-r 60`）：`level 100 → 0 dB（100%）`，`level 0 → −60 dB（0.1%）`，
 中间线性对应 dB。所以 `level 50 = −30 dB`，`level 70 ≈ −18 dB`。
 
-## 例：把耳机调到一个合适的低音量
+例：把耳机调到一个合适的低音量
 
 ```sh
 $ lvol
@@ -148,26 +111,6 @@ $ lvol -50dB
 
 注意：系统音量 UI 会显示 0%（因为它只显示整数百分比），但设备实际是 0.316%，
 不是静音——这正是比滑块更低、更细的控制。
-
-## 工作原理
-
-- 取默认输出设备（`kAudioHardwarePropertyDefaultOutputDevice`）。
-- 读写设备的虚拟主音量：优先 `kAudioHardwareServiceDeviceProperty_VirtualMainVolume`，
-  回退到 `kAudioDevicePropertyVolumeScalar`（主 / 通道 1）。
-- 这些属性是 `Float32`，可写任意浮点，因此不受滑块 1% 步进限制。
-- 刻度换算：`dB = (level/100 - 1) * range`，`scalar = 10^(dB/20)`。
-- CLI 与应用是**同一套逻辑**的两个前端（C 与 Swift 各实现一份），输出一致。
-
-## 可选：绑定到键盘
-
-GUI 提供滑块；若还想要快捷键，可在 Karabiner-Elements / skhd / Raycast / 快捷指令里绑定：
-
-```sh
-lvol +2      # 音量 + 键
-lvol -2      # 音量 - 键
-```
-
-（CLI 不接管系统音量键——那需要常驻进程。桌面应用本身也不会拦音量键。）
 
 ## 许可
 
