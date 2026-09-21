@@ -5,8 +5,9 @@
  * device's floating-point volume scalar on a dB-uniform scale, so quiet levels
  * are as adjustable as loud ones. Mirrors the `lvol` CLI.
  *
- * The window is the whole UI: there is no menu-bar extra, and the app keeps
- * running (Dock icon) after the window is closed.
+ * The window is the main UI. A menu-bar extra (NSStatusItem) offers the common
+ * actions: left-click reopens the window, right-click shows a menu. The app
+ * keeps running (Dock icon) after the window is closed.
  *
  * License: MIT
  */
@@ -904,6 +905,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var timer: Timer?
 
+    /* Menu-bar extra. Left-click reopens/refronts the main window; right-click
+     * shows a menu of the common actions. Its icon mirrors the mute state, and
+     * its menu is rebuilt on every open so it always shows live values. */
+    private var statusItem: NSStatusItem?
+
     /* System-wide hot keys. Loaded from UserDefaults at launch, replaced when
      * the Settings recorder changes a binding. */
     private let hotKeys = HotKeyManager()
@@ -928,6 +934,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window = win
         NSApp.activate(ignoringOtherApps: true)
         diag("window shown")
+
+        installStatusItem()
 
         /* Local key monitor: it only fires for events delivered to this app's
          * key window, so nothing happens while the app is not focused. It
@@ -955,7 +963,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         /* Keep the display in sync if the volume changes elsewhere
          * (volume keys, another app) while the window is visible. */
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            guard let self, self.window?.isVisible == true else { return }
+            guard let self else { return }
+            /* The status icon must track mute even while the main window is
+             * closed, so update it before the visibility guard below. */
+            self.updateStatusIcon()
+            guard self.window?.isVisible == true else { return }
             self.vc.refresh()
         }
     }
@@ -1101,6 +1113,156 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
         return true
+    }
+
+    // ------------------------------------------------------------------
+    // menu-bar extra (NSStatusItem)
+    // ------------------------------------------------------------------
+
+    /* Create the status item once. Left-click reopens the window, right-click
+     * pops the menu; -statusItemClicked tells the two apart via the current
+     * event. */
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            button.target = self
+            button.action = #selector(statusItemClicked)
+            /* Fire the action for both buttons; the default is left only. */
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+        statusItem = item
+        updateStatusIcon()
+    }
+
+    /* Mirror the default output's mute state in the icon: speaker.slash while
+     * muted, speaker.wave.2 otherwise. Called right after creation and then off
+     * the 2 s timer, so it stays correct even while the window is closed. */
+    private func updateStatusIcon() {
+        let muted = readMute(defaultOutput())
+        let name = muted ? "speaker.slash" : "speaker.wave.2"
+        let image = NSImage(systemSymbolName: name,
+                            accessibilityDescription: muted ? "Muted" : "Volume")
+        image?.isTemplate = true /* let the menu bar tint it for light/dark */
+        statusItem?.button?.image = image
+    }
+
+    /* One action for both mouse buttons; NSApp.currentEvent (not the sender,
+     * which is the status button either way) says which button fired. */
+    @objc private func statusItemClicked() {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            popUpStatusMenu()
+        } else {
+            showMainWindow()
+        }
+    }
+
+    /* Open the main window, creating it if it was somehow never built, and
+     * bring it to the front without stacking a duplicate. */
+    private func showMainWindow() {
+        if window == nil {
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 214),
+                               styleMask: [.titled, .closable, .miniaturizable],
+                               backing: .buffered, defer: false)
+            win.title = "lvol"
+            win.contentViewController = vc
+            win.isReleasedWhenClosed = false
+            win.center()
+            window = win
+        }
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /* Show the menu. Rather than the deprecated popUpStatusMenu, hand the item a
+     * menu and click the button so AppKit runs its normal menu path, then clear
+     * the menu again so a later left-click reopens the window. performClick runs
+     * the menu modally and only returns once it has been dismissed. */
+    private func popUpStatusMenu() {
+        guard let item = statusItem else { return }
+        item.menu = buildStatusMenu()
+        item.button?.performClick(nil)
+        item.menu = nil
+    }
+
+    /* Rebuilt on every open, so the shortcut labels, the check mark and the
+     * minimum-volume selection all reflect the live state. */
+    private func buildStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+
+        /* Show the current binding as text, but leave keyEquivalent empty: the
+         * real shortcut is the system-wide hot key, and a key equivalent here
+         * would only work while this menu is open. */
+        let upItem = NSMenuItem(title: "Volume Up    " + shortcutDisplay(hotKeyUp),
+                                action: #selector(statusVolumeUp), keyEquivalent: "")
+        upItem.target = self
+        menu.addItem(upItem)
+
+        let downItem = NSMenuItem(title: "Volume Down    " + shortcutDisplay(hotKeyDown),
+                                  action: #selector(statusVolumeDown), keyEquivalent: "")
+        downItem.target = self
+        menu.addItem(downItem)
+
+        menu.addItem(.separator())
+
+        let hotKeysItem = NSMenuItem(title: "Global Hot Keys",
+                                     action: #selector(statusToggleHotKeys), keyEquivalent: "")
+        hotKeysItem.target = self
+        hotKeysItem.state = hotKeysOn ? .on : .off
+        menu.addItem(hotKeysItem)
+
+        menu.addItem(minimumVolumeItem())
+
+        menu.addItem(.separator())
+
+        /* Same Cmd+, as the App menu, reusing the existing Settings action. */
+        let settingsItem = NSMenuItem(title: "Settings\u{2026}",
+                                      action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.keyEquivalentModifierMask = [.command]
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit lvol",
+                                  action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quitItem.keyEquivalentModifierMask = [.command]
+        menu.addItem(quitItem)
+
+        return menu
+    }
+
+    /* The six preset spans. Each item carries the positive rangeDB value (the
+     * negative dB level 0 maps to) - the same convention as the Settings
+     * slider - so selecting one writes exactly what that slider would. */
+    private func minimumVolumeItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Minimum Volume", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let current = -kRangeDB /* the negative dB level 0 currently maps to */
+        for db in [30.0, 45.0, 60.0, 75.0, 90.0, 120.0] {
+            let choice = NSMenuItem(title: "\(Int(db)) dB",
+                                    action: #selector(statusSetMinimumVolume(_:)),
+                                    keyEquivalent: "")
+            choice.target = self
+            choice.representedObject = db /* positive span, stored verbatim */
+            choice.state = abs(current + db) < 0.5 ? .on : .off
+            submenu.addItem(choice)
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func statusVolumeUp() { vc.adjustLevel(2) }
+
+    @objc private func statusVolumeDown() { vc.adjustLevel(-2) }
+
+    @objc private func statusToggleHotKeys() { setHotKeysEnabled(!hotKeysOn) }
+
+    /* Write the chosen span and re-render the main window, mirroring the
+     * Settings slider's onChange path. */
+    @objc private func statusSetMinimumVolume(_ sender: NSMenuItem) {
+        guard let span = sender.representedObject as? Double else { return }
+        UserDefaults.standard.set(span, forKey: kRangeDBKey)
+        vc.refresh()
     }
 }
 
