@@ -510,6 +510,14 @@ final class ControlViewController: NSViewController {
     private let slider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private let muteButton = NSButton(title: "Mute", target: nil, action: nil)
 
+    /* The last perceptual level the device was heard at, i.e. its volume while
+     * *not* muted. macOS parks the volume scalar at 0 when the system volume
+     * keys mute the device, so the raw reading is useless for "where should we
+     * resume". Kept up to date whenever the device is unmuted (0 included) and
+     * left untouched while muted. Starts at 0, so booting into a muted device
+     * resumes from 0 as requested. */
+    private var lastAudibleLevel: Double = 0
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 134))
 
@@ -556,13 +564,25 @@ final class ControlViewController: NSViewController {
     func refresh() {
         let d = defaultOutput()
         deviceLabel.stringValue = d == 0 ? "No output device" : outputDeviceName(d)
-        if let s = readVolume(d) {
+        let muted = readMute(d)
+        if muted {
+            /* Muted: the device often reports volume 0 (the system parked it
+             * there), so show the level the user last heard instead of that 0.
+             * Dim the slider as a cue that it is muted, but leave it draggable -
+             * a drag still adjusts the volume (and unmutes) from this value. */
+            slider.doubleValue = lastAudibleLevel
+            updateValueLabel(levelToScalar(lastAudibleLevel))
+            slider.alphaValue = 0.5
+        } else if let s = readVolume(d) {
+            lastAudibleLevel = scalarToLevel(s) /* remember it, 0 included */
             slider.doubleValue = scalarToLevel(s)
             updateValueLabel(s)
+            slider.alphaValue = 1.0
         } else {
             valueLabel.stringValue = "n/a"
+            slider.alphaValue = 1.0
         }
-        updateMuteButton(readMute(d))
+        updateMuteButton(muted)
     }
 
     private func updateValueLabel(_ s: Float32) {
@@ -572,16 +592,21 @@ final class ControlViewController: NSViewController {
     }
 
     @objc private func sliderChanged() {
-        let s = levelToScalar(slider.doubleValue)
-        writeVolume(defaultOutput(), s)
-        updateValueLabel(s)
+        applyLevel(slider.doubleValue)
     }
 
     @objc private func toggleMute() {
         let d = defaultOutput()
-        let muted = !readMute(d)
-        writeMute(d, muted)
-        updateMuteButton(muted)
+        if readMute(d) {
+            /* Unmute: also restore the remembered level, so playback resumes
+             * where the user left off instead of at the 0 the system wrote. */
+            applyLevel(lastAudibleLevel)
+        } else {
+            /* Mute only - leave the volume scalar alone so the remembered level
+             * survives for the next unmute. refresh() dims the slider. */
+            writeMute(d, true)
+            refresh()
+        }
     }
 
     /* The button label names the action it will perform next. */
@@ -589,15 +614,37 @@ final class ControlViewController: NSViewController {
         muteButton.title = muted ? "Unmute" : "Mute"
     }
 
-    /* Step the perceptual level; used by the +/- keyboard shortcuts. */
-    func adjustLevel(_ delta: Double) {
+    /* Write a new perceptual level and, as part of the same gesture, clear
+     * mute: adjusting the volume is an explicit "I want to hear it" action, so
+     * it must not leave the device silent. This matters because macOS's volume
+     * keys drive the mute property *and* the volume, and clearing one does not
+     * clear the other. Order matters - volume first, then unmute - so audio
+     * never briefly plays at the old level. The slider and label are rendered
+     * from the requested level, and lastAudibleLevel is refreshed because the
+     * device is now unmuted. Every interactive volume path (slider drag,
+     * in-window +/-, global hot key) funnels through here. */
+    private func applyLevel(_ level: Double) {
         let d = defaultOutput()
-        let cur = readVolume(d).map(scalarToLevel) ?? 0
-        let next = min(max(cur + delta, 0), 100)
+        let next = min(max(level, 0), 100)
         let s = levelToScalar(next)
         writeVolume(d, s)
+        if readMute(d) { writeMute(d, false) }
+        lastAudibleLevel = next
         slider.doubleValue = next
+        slider.alphaValue = 1.0
         updateValueLabel(s)
+        updateMuteButton(false)
+    }
+
+    /* Step the perceptual level; used by the +/- keyboard shortcuts. While
+     * muted the raw volume is meaningless (the system parks it at 0), so step
+     * from the remembered audible level instead. */
+    func adjustLevel(_ delta: Double) {
+        let d = defaultOutput()
+        let base = readMute(d)
+            ? lastAudibleLevel
+            : (readVolume(d).map(scalarToLevel) ?? lastAudibleLevel)
+        applyLevel(base + delta)
     }
 }
 
