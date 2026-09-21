@@ -151,7 +151,7 @@ final class ControlViewController: NSViewController {
     private let muteButton = NSButton(title: "Mute", target: nil, action: nil)
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 168))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 134))
 
         deviceLabel.font = .systemFont(ofSize: 11)
         deviceLabel.textColor = .secondaryLabelColor
@@ -168,19 +168,7 @@ final class ControlViewController: NSViewController {
         muteButton.target = self
         muteButton.action = #selector(toggleMute)
 
-        var presets: [NSButton] = []
-        for p in [25, 50, 75, 100] {
-            let b = NSButton(title: "\(p)", target: self, action: #selector(presetTapped(_:)))
-            b.bezelStyle = .rounded
-            b.tag = p
-            presets.append(b)
-        }
-        let presetRow = NSStackView(views: presets)
-        presetRow.orientation = .horizontal
-        presetRow.spacing = 6
-        presetRow.distribution = .fillEqually
-
-        let stack = NSStackView(views: [deviceLabel, valueLabel, slider, presetRow, muteButton])
+        let stack = NSStackView(views: [deviceLabel, valueLabel, slider, muteButton])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -194,7 +182,6 @@ final class ControlViewController: NSViewController {
             stack.topAnchor.constraint(equalTo: root.topAnchor),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             slider.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
-            presetRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             muteButton.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
         ])
 
@@ -228,11 +215,6 @@ final class ControlViewController: NSViewController {
         let s = levelToScalar(slider.doubleValue)
         writeVolume(defaultOutput(), s)
         updateValueLabel(s)
-    }
-
-    @objc private func presetTapped(_ sender: NSButton) {
-        slider.doubleValue = Double(sender.tag)
-        sliderChanged()
     }
 
     @objc private func toggleMute() {
