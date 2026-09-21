@@ -14,6 +14,7 @@
 import AppKit
 import CoreAudio
 import AudioToolbox
+import Carbon.HIToolbox
 
 // ------------------------------------------------------------------
 // CoreAudio helpers
@@ -151,6 +152,355 @@ func scalarToDb(_ s: Float32) -> Double {
 }
 
 // ------------------------------------------------------------------
+// global hot keys (Carbon RegisterEventHotKey)
+//
+// Real system-wide hot keys: unlike NSEvent.addGlobalMonitorForEvents these
+// need no Accessibility permission *and* actually claim the combination, so a
+// press cannot also leak through to whatever app is frontmost. The system
+// delivers kEventHotKeyPressed on the main event loop; we hop to the main
+// queue anyway rather than assume it.
+// ------------------------------------------------------------------
+
+/* The in-window +/- shortcut delta for a key event, or nil if the local
+ * monitor must leave the event alone. Crucially it claims *only* combos with
+ * no Command/Option/Control: those belong to a menu shortcut or a global hot
+ * key, and handling them here as well would double-fire (e.g. a hot key
+ * recorded as ⌃= or ⌥= would step the volume twice in one press). Shift is
+ * deliberately kept, since ⇧= types "+" and ⇧- types "_" - the very
+ * characters this shortcut is meant to catch. */
+func localHotKeyDelta(characters: String, modifiers: NSEvent.ModifierFlags) -> Double? {
+    guard modifiers.intersection([.command, .option, .control]).isEmpty else { return nil }
+    switch characters {
+    case "+", "=": return 2
+    case "-", "_": return -2
+    default:       return nil
+    }
+}
+
+/* A physical key plus its Carbon modifier mask (cmdKey/optionKey/...). Stored
+ * in UserDefaults as two Ints, so no custom codable plumbing is needed. */
+struct HotKey: Equatable {
+    var keyCode: UInt32
+    var modifiers: UInt32
+}
+
+let kHotKeyUpKey = "hotKeyUp"
+let kHotKeyDownKey = "hotKeyDown"
+
+/* Defaults: Option + '=' (shown as '+') raises, Option + '-' lowers - the same
+ * +-2 step as the in-window shortcuts. '=' is the physical key; '+' itself
+ * would require Shift, so it is the usual stand-in for it. */
+let defaultHotKeyUp = HotKey(keyCode: UInt32(kVK_ANSI_Equal), modifiers: UInt32(optionKey))
+let defaultHotKeyDown = HotKey(keyCode: UInt32(kVK_ANSI_Minus), modifiers: UInt32(optionKey))
+
+func loadHotKey(_ key: String, fallingBackTo def: HotKey) -> HotKey {
+    if let a = UserDefaults.standard.array(forKey: key) as? [Int], a.count == 2 {
+        return HotKey(keyCode: UInt32(a[0]), modifiers: UInt32(a[1]))
+    }
+    return def
+}
+
+func saveHotKey(_ key: String, _ hk: HotKey) {
+    UserDefaults.standard.set([Int(hk.keyCode), Int(hk.modifiers)], forKey: key)
+}
+
+/* NSEvent modifiers -> Carbon mask. Only the four "real" modifiers, so caps
+ * lock and friends can never make a binding unreachable. */
+func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
+    var m: UInt32 = 0
+    if flags.contains(.command) { m |= UInt32(cmdKey) }
+    if flags.contains(.option)  { m |= UInt32(optionKey) }
+    if flags.contains(.control) { m |= UInt32(controlKey) }
+    if flags.contains(.shift)   { m |= UInt32(shiftKey) }
+    return m
+}
+
+/* The reverse, for display: Control, Option, Shift, Command - the order macOS
+ * prints modifier symbols in. */
+func modifierSymbols(_ m: UInt32) -> String {
+    var s = ""
+    if m & UInt32(controlKey) != 0 { s += "\u{2303}" } /* ⌃ */
+    if m & UInt32(optionKey)  != 0 { s += "\u{2325}" } /* ⌥ */
+    if m & UInt32(shiftKey)   != 0 { s += "\u{21E7}" } /* ⇧ */
+    if m & UInt32(cmdKey)     != 0 { s += "\u{2318}" } /* ⌘ */
+    return s
+}
+
+/* Human name for a key code; covers what people actually bind and falls back
+ * to "Key<n>" for anything exotic. */
+func keyName(_ keyCode: UInt32) -> String {
+    switch Int(keyCode) {
+    case kVK_ANSI_A: return "A"
+    case kVK_ANSI_B: return "B"
+    case kVK_ANSI_C: return "C"
+    case kVK_ANSI_D: return "D"
+    case kVK_ANSI_E: return "E"
+    case kVK_ANSI_F: return "F"
+    case kVK_ANSI_G: return "G"
+    case kVK_ANSI_H: return "H"
+    case kVK_ANSI_I: return "I"
+    case kVK_ANSI_J: return "J"
+    case kVK_ANSI_K: return "K"
+    case kVK_ANSI_L: return "L"
+    case kVK_ANSI_M: return "M"
+    case kVK_ANSI_N: return "N"
+    case kVK_ANSI_O: return "O"
+    case kVK_ANSI_P: return "P"
+    case kVK_ANSI_Q: return "Q"
+    case kVK_ANSI_R: return "R"
+    case kVK_ANSI_S: return "S"
+    case kVK_ANSI_T: return "T"
+    case kVK_ANSI_U: return "U"
+    case kVK_ANSI_V: return "V"
+    case kVK_ANSI_W: return "W"
+    case kVK_ANSI_X: return "X"
+    case kVK_ANSI_Y: return "Y"
+    case kVK_ANSI_Z: return "Z"
+    case kVK_ANSI_0: return "0"
+    case kVK_ANSI_1: return "1"
+    case kVK_ANSI_2: return "2"
+    case kVK_ANSI_3: return "3"
+    case kVK_ANSI_4: return "4"
+    case kVK_ANSI_5: return "5"
+    case kVK_ANSI_6: return "6"
+    case kVK_ANSI_7: return "7"
+    case kVK_ANSI_8: return "8"
+    case kVK_ANSI_9: return "9"
+    case kVK_ANSI_Equal: return "+"        /* the physical '=' key */
+    case kVK_ANSI_Minus: return "-"
+    case kVK_ANSI_LeftBracket: return "["
+    case kVK_ANSI_RightBracket: return "]"
+    case kVK_ANSI_Slash: return "/"
+    case kVK_ANSI_Backslash: return "\\"
+    case kVK_ANSI_Comma: return ","
+    case kVK_ANSI_Period: return "."
+    case kVK_ANSI_Semicolon: return ";"
+    case kVK_ANSI_Quote: return "'"
+    case kVK_ANSI_Grave: return "`"
+    case kVK_Space: return "Space"
+    case kVK_Return: return "\u{21A9}"     /* ↩ */
+    case kVK_Tab: return "\u{21E5}"        /* ⇥ */
+    case kVK_Delete: return "\u{232B}"     /* ⌫ */
+    case kVK_Escape: return "\u{238B}"     /* ⎋ */
+    case kVK_LeftArrow: return "\u{2190}"  /* ← */
+    case kVK_RightArrow: return "\u{2192}" /* → */
+    case kVK_UpArrow: return "\u{2191}"    /* ↑ */
+    case kVK_DownArrow: return "\u{2193}"  /* ↓ */
+    case kVK_F1: return "F1"
+    case kVK_F2: return "F2"
+    case kVK_F3: return "F3"
+    case kVK_F4: return "F4"
+    case kVK_F5: return "F5"
+    case kVK_F6: return "F6"
+    case kVK_F7: return "F7"
+    case kVK_F8: return "F8"
+    case kVK_F9: return "F9"
+    case kVK_F10: return "F10"
+    case kVK_F11: return "F11"
+    case kVK_F12: return "F12"
+    default: return "Key\(keyCode)"
+    }
+}
+
+func shortcutDisplay(_ hk: HotKey) -> String {
+    modifierSymbols(hk.modifiers) + " " + keyName(hk.keyCode)
+}
+
+/* Owns the Carbon registrations. One shared event handler routes every
+ * kEventHotKeyPressed to the closure registered for that hot key's id
+ * (1 = up, 2 = down). */
+final class HotKeyManager {
+    private static let signature = OSType(0x6C_76_6F_6C) /* 'lvol' */
+
+    private var refs: [EventHotKeyRef] = []
+    private var handlerRef: EventHandlerRef?
+    private var actions: [UInt32: () -> Void] = [:]
+
+    /* The last pair that registered cleanly. Kept so a failed re-bind can be
+     * rolled back to a working state instead of silently leaving the user
+     * with no global hot key at all. */
+    private var lastGoodUp: HotKey?
+    private var lastGoodDown: HotKey?
+
+    /* Replace the whole set. Returns true only if *every* key registered.
+     * Old registrations are dropped first, so a combo is never registered
+     * twice. If any key fails, the half-applied registration is undone and the
+     * previously working pair is put back, so the return value never lies
+     * about the live state. */
+    @discardableResult
+    func register(up: HotKey, upAction: @escaping () -> Void,
+                  down: HotKey, downAction: @escaping () -> Void) -> Bool {
+        /* Remember the pair to restore on failure *before* touching anything. */
+        let prevUp = lastGoodUp
+        let prevDown = lastGoodDown
+
+        unregisterAll()
+        installHandler()
+        actions = [1: upAction, 2: downAction]
+
+        let upOK = add(up, id: 1)
+        let downOK = add(down, id: 2)
+
+        if upOK && downOK {
+            lastGoodUp = up
+            lastGoodDown = down
+            return true
+        }
+
+        /* Roll back: drop whatever half-applied pair landed, then re-register
+         * the last pair that worked (if there ever was one). */
+        unregisterAll()
+        if let pu = prevUp, let pd = prevDown {
+            if add(pu, id: 1) && add(pd, id: 2) {
+                lastGoodUp = pu
+                lastGoodDown = pd
+            } else {
+                /* Unlikely: the previously working pair no longer registers
+                 * (e.g. another app grabbed it in the meantime). */
+                unregisterAll()
+                lastGoodUp = nil
+                lastGoodDown = nil
+            }
+        }
+        NSSound.beep()
+        diag("hotkey rebind failed (up keyCode=\(up.keyCode) mods=\(up.modifiers), "
+             + "down keyCode=\(down.keyCode) mods=\(down.modifiers)); restored previous binding")
+        return false
+    }
+
+    /* Register one key. Returns whether it landed. */
+    @discardableResult
+    private func add(_ hk: HotKey, id: UInt32) -> Bool {
+        var ref: EventHotKeyRef?
+        let hkID = EventHotKeyID(signature: HotKeyManager.signature, id: id)
+        let st = RegisterEventHotKey(hk.keyCode, hk.modifiers, hkID,
+                                     GetEventDispatcherTarget(), 0, &ref)
+        if st == noErr, let ref {
+            refs.append(ref)
+            return true
+        }
+        /* Most often the combo is already taken by another app. */
+        diag("hotkey \(id == 1 ? "up" : "down") register failed: status=\(st) "
+             + "keyCode=\(hk.keyCode) mods=\(hk.modifiers)")
+        return false
+    }
+
+    private func installHandler() {
+        guard handlerRef == nil else { return }
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                 eventKind: UInt32(kEventHotKeyPressed))
+        let st = InstallEventHandler(GetEventDispatcherTarget(),
+                                     hotKeyEventCallback,
+                                     1, &spec,
+                                     Unmanaged.passUnretained(self).toOpaque(),
+                                     &handlerRef)
+        if st != noErr { diag("hotkey InstallEventHandler failed: status=\(st)") }
+    }
+
+    private func unregisterAll() {
+        for r in refs { UnregisterEventHotKey(r) }
+        refs.removeAll()
+    }
+
+    /* Called from the C callback; run the action on the main thread. */
+    fileprivate func dispatch(id: UInt32) {
+        guard let action = actions[id] else { return }
+        if Thread.isMainThread {
+            action()
+        } else {
+            DispatchQueue.main.async(execute: action)
+        }
+    }
+}
+
+/* The C callback cannot capture, so it finds its owner through the userData
+ * pointer handed to InstallEventHandler. */
+private let hotKeyEventCallback: EventHandlerUPP = { _, event, userData in
+    guard let event, let userData else { return OSStatus(eventNotHandledErr) }
+    var hkID = EventHotKeyID()
+    let st = GetEventParameter(event,
+                               EventParamName(kEventParamDirectObject),
+                               EventParamType(typeEventHotKeyID),
+                               nil,
+                               MemoryLayout<EventHotKeyID>.size,
+                               nil,
+                               &hkID)
+    guard st == noErr else { return OSStatus(eventNotHandledErr) }
+    let mgr = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
+    mgr.dispatch(id: hkID.id)
+    return noErr
+}
+
+/* A button that doubles as a shortcut recorder: click it and the next key
+ * press is captured (Esc cancels). The combo must include at least one of
+ * Command/Option/Control/Shift, so a binding can never swallow plain typing. */
+final class ShortcutRecorderButton: NSButton {
+    /* (keyCode, Carbon modifier mask) of the captured combo. */
+    var onCapture: ((UInt32, UInt32) -> Void)?
+
+    private var shortcutText = ""
+    private var recording = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+    private func commonInit() {
+        bezelStyle = .rounded
+        setButtonType(.momentaryPushIn)
+    }
+
+    /* Drives the idle label. Ignored while recording, so the prompt stays. */
+    func setShortcut(_ text: String) {
+        shortcutText = text
+        if !recording { title = text }
+    }
+
+    /* NSButton refuses first responder by default; the recorder needs it to
+     * receive keyDown. */
+    override var acceptsFirstResponder: Bool { true }
+
+    /* Swallow the click instead of firing an action; a click while recording
+     * cancels it. */
+    override func mouseDown(with event: NSEvent) {
+        if recording { stopRecording() } else { startRecording() }
+    }
+
+    private func startRecording() {
+        recording = true
+        title = "Press a key\u{2026}"
+        if let w = window { w.makeFirstResponder(self) }
+    }
+
+    private func stopRecording() {
+        recording = false
+        title = shortcutText
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard recording else { super.keyDown(with: event); return }
+        /* Esc cancels the capture and keeps the previous binding. */
+        if Int(event.keyCode) == kVK_Escape { stopRecording(); return }
+
+        let mods = carbonModifiers(from: event.modifierFlags)
+        guard mods != 0 else {
+            /* No modifier would hijack ordinary typing. */
+            NSSound.beep()
+            return
+        }
+        recording = false
+        let kc = UInt32(event.keyCode)
+        shortcutText = shortcutDisplay(HotKey(keyCode: kc, modifiers: mods))
+        title = shortcutText
+        onCapture?(kc, mods)
+    }
+}
+
+// ------------------------------------------------------------------
 // the popover panel
 // ------------------------------------------------------------------
 
@@ -268,11 +618,20 @@ final class SettingsViewController: NSViewController {
     private let rangeSlider = NSSlider(value: -kDefaultRangeDB, minValue: -120, maxValue: -30,
                                        target: nil, action: nil)
 
+    /* Global-hot-key recorders, one per direction. */
+    private let upRecorder = ShortcutRecorderButton()
+    private let downRecorder = ShortcutRecorderButton()
+
     /* Invoked after a setting changes, so the main window can re-render. */
     var onChange: (() -> Void)?
 
+    /* Wired by the app delegate: read the live bindings, and apply a new pair
+     * (persist + re-register) when the user records or restores one. */
+    var currentHotKeys: (() -> (up: HotKey, down: HotKey))?
+    var applyHotKeys: ((HotKey, HotKey) -> Void)?
+
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 108))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 216))
 
         rangeTitleLabel.font = .systemFont(ofSize: 11)
         rangeTitleLabel.textColor = .secondaryLabelColor
@@ -309,7 +668,22 @@ final class SettingsViewController: NSViewController {
         header.alignment = .firstBaseline
         header.distribution = .fill
 
-        let stack = NSStackView(views: [header, rangeSlider, scaleRow])
+        /* Shortcut rows, in the same title style, plus a way back to defaults.
+         * Each recorder shows its combo and captures a new one on click. */
+        let upRow = hotKeyRow(title: "Volume up", recorder: upRecorder)
+        let downRow = hotKeyRow(title: "Volume down", recorder: downRecorder)
+        upRecorder.onCapture = { [weak self] kc, mods in
+            self?.captured(up: true, keyCode: kc, modifiers: mods)
+        }
+        downRecorder.onCapture = { [weak self] kc, mods in
+            self?.captured(up: false, keyCode: kc, modifiers: mods)
+        }
+        let restoreButton = NSButton(title: "Restore Defaults", target: self,
+                                     action: #selector(restoreDefaultHotKeys))
+        restoreButton.bezelStyle = .rounded
+
+        let stack = NSStackView(views: [header, rangeSlider, scaleRow,
+                                        upRow, downRow, restoreButton])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -325,9 +699,31 @@ final class SettingsViewController: NSViewController {
             header.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
             rangeSlider.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
             scaleRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
+            upRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
+            downRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
         ])
 
         self.view = root
+    }
+
+    /* A "title ... recorder" row that fills the width, matching the style of
+     * the Minimum volume header. */
+    private func hotKeyRow(title: String, recorder: ShortcutRecorderButton) -> NSStackView {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [label, spacer, recorder])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        return row
     }
 
     /* Re-read on every show: the window is reused, so loadView runs only once. */
@@ -336,6 +732,7 @@ final class SettingsViewController: NSViewController {
         /* slider value = level 0's dB (negative); storage rangeDB = -sliderValue. */
         rangeSlider.doubleValue = -kRangeDB
         updateMinVolumeLabel(-kRangeDB)
+        refreshRecorderLabels()
     }
 
     private func updateMinVolumeLabel(_ db: Double) {
@@ -349,6 +746,28 @@ final class SettingsViewController: NSViewController {
         updateMinVolumeLabel(db)
         onChange?()
     }
+
+    /* ---- global hot keys ---- */
+
+    private func refreshRecorderLabels() {
+        let hk = currentHotKeys?() ?? (up: defaultHotKeyUp, down: defaultHotKeyDown)
+        upRecorder.setShortcut(shortcutDisplay(hk.up))
+        downRecorder.setShortcut(shortcutDisplay(hk.down))
+    }
+
+    /* A recorder captured a combo: keep the other direction, apply and show it. */
+    private func captured(up: Bool, keyCode: UInt32, modifiers: UInt32) {
+        var hk = currentHotKeys?() ?? (up: defaultHotKeyUp, down: defaultHotKeyDown)
+        let new = HotKey(keyCode: keyCode, modifiers: modifiers)
+        if up { hk.up = new } else { hk.down = new }
+        applyHotKeys?(hk.up, hk.down)
+        refreshRecorderLabels()
+    }
+
+    @objc private func restoreDefaultHotKeys() {
+        applyHotKeys?(defaultHotKeyUp, defaultHotKeyDown)
+        refreshRecorderLabels()
+    }
 }
 
 // ------------------------------------------------------------------
@@ -360,6 +779,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var settingsWindow: NSWindow?
     private var timer: Timer?
+
+    /* System-wide hot keys. Loaded from UserDefaults at launch, replaced when
+     * the Settings recorder changes a binding. */
+    private let hotKeys = HotKeyManager()
+    private var hotKeyUp = defaultHotKeyUp
+    private var hotKeyDown = defaultHotKeyDown
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         diag("didFinishLaunching bundleID=\(Bundle.main.bundleIdentifier ?? "nil")")
@@ -378,15 +803,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         diag("window shown")
 
         /* Local key monitor: it only fires for events delivered to this app's
-         * key window, so nothing happens while the app is not focused. */
+         * key window, so nothing happens while the app is not focused. It
+         * ignores any combo that carries Cmd/Option/Control, because those are
+         * menu shortcuts or global hot keys and must not be handled a second
+         * time here (see localHotKeyDelta). */
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let win = self.window, event.window === win else { return event }
-            switch event.characters ?? "" {
-            case "+", "=": self.vc.adjustLevel(2);  return nil
-            case "-", "_": self.vc.adjustLevel(-2); return nil
-            default:       return event
+            guard let delta = localHotKeyDelta(characters: event.characters ?? "",
+                                               modifiers: event.modifierFlags) else {
+                return event
             }
+            self.vc.adjustLevel(delta)
+            return nil
         }
+
+        /* System-wide hot keys, from UserDefaults (defaults when unset). Unlike
+         * the local monitor above these work even when the app is unfocused or
+         * its window is closed, because the window object stays alive. */
+        hotKeyUp = loadHotKey(kHotKeyUpKey, fallingBackTo: defaultHotKeyUp)
+        hotKeyDown = loadHotKey(kHotKeyDownKey, fallingBackTo: defaultHotKeyDown)
+        applyHotKeys(hotKeyUp, hotKeyDown)
 
         /* Keep the display in sync if the volume changes elsewhere
          * (volume keys, another app) while the window is visible. */
@@ -395,6 +831,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.vc.refresh()
         }
     }
+
+    /* (Re)register the global hot keys. The actions reuse vc.adjustLevel(_:),
+     * the same +-2 step as the in-window +/- shortcuts, so both paths stay in
+     * sync and no volume logic is duplicated. Only on full success do we adopt
+     * the new pair as the live one; a failure leaves hotKeyUp/hotKeyDown (and
+     * HotKeyManager's own state) pointing at whatever is actually registered,
+     * so the Settings window keeps showing the real binding. */
+    @discardableResult
+    private func applyHotKeys(_ up: HotKey, _ down: HotKey) -> Bool {
+        let ok = hotKeys.register(up: up,
+                                  upAction: { [weak self] in self?.vc.adjustLevel(2) },
+                                  down: down,
+                                  downAction: { [weak self] in self?.vc.adjustLevel(-2) })
+        if ok {
+            hotKeyUp = up
+            hotKeyDown = down
+        }
+        return ok
+    }
+
+    /* The Settings recorder's write path: re-register first, and persist the
+     * new combo only if it fully took. On failure the live binding is rolled
+     * back (with a beep) and UserDefaults keeps the old value, so the next
+     * launch does not retry the same broken pair. */
+    func setHotKeys(up: HotKey, down: HotKey) {
+        if applyHotKeys(up, down) {
+            saveHotKey(kHotKeyUpKey, up)
+            saveHotKey(kHotKeyDownKey, down)
+        }
+    }
+
+    func currentHotKeys() -> (up: HotKey, down: HotKey) { (hotKeyUp, hotKeyDown) }
 
     /* A minimal programmatic main menu. AppKit only routes the Cmd+Q
      * shortcut to -[NSApplication terminate:] when a menu item carrying it
@@ -447,13 +915,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
      * a second click must re-front the same window, not stack a new one. */
     @objc private func showSettings() {
         if settingsWindow == nil {
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 108),
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 216),
                                styleMask: [.titled, .closable],
                                backing: .buffered, defer: false)
             win.title = "lvol Settings"
             let svc = SettingsViewController()
             /* Re-render the main window with the new range, if it is open. */
             svc.onChange = { [weak self] in self?.vc.refresh() }
+            /* Bridge the shortcut recorders to our live bindings. */
+            svc.currentHotKeys = { [weak self] in
+                self?.currentHotKeys() ?? (up: defaultHotKeyUp, down: defaultHotKeyDown)
+            }
+            svc.applyHotKeys = { [weak self] up, down in
+                self?.setHotKeys(up: up, down: down)
+            }
             win.contentViewController = svc
             win.isReleasedWhenClosed = false
             win.center()
