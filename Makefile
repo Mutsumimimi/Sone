@@ -1,7 +1,7 @@
-# lvol — dB-uniform output volume for macOS.
+# Sone — dB-uniform output volume for macOS.
 #
-#   lvol       the CLI              (C, ~35 KB, no dependencies)
-#   lvol.app   the desktop-window GUI (Swift/AppKit)
+#   sone       the CLI              (C, ~35 KB, no dependencies)
+#   Sone.app   the desktop-window GUI (Swift/AppKit)
 
 CC      ?= clang
 # Deployment target: the lowest macOS the binaries will run on. Kept in sync
@@ -15,18 +15,18 @@ SWIFTFLAGS ?= -O
 SWIFT_TARGET := -target $(shell uname -m)-apple-macos$(MACOS_MIN)
 PREFIX  ?= /usr/local
 
-APP     := build/lvol.app
-APPBIN  := $(APP)/Contents/MacOS/LvolApp
+APP     := build/Sone.app
+APPBIN  := $(APP)/Contents/MacOS/SoneApp
 PLIST   := $(APP)/Contents/Info.plist
 ICNS    := $(APP)/Contents/Resources/AppIcon.icns
 LOGO    := logo_raw.png
 
-all: lvol gui
+all: sone gui
 
 # ------------------------------------------------------------------ CLI
 
-lvol: lvol.c
-	$(CC) $(CFLAGS) -o $@ lvol.c $(LDFLAGS)
+sone: sone.c
+	$(CC) $(CFLAGS) -o $@ sone.c $(LDFLAGS)
 	@strip $@ 2>/dev/null || true
 
 # ------------------------------------------------------------------ GUI
@@ -41,30 +41,30 @@ gui: $(APPBIN)
 	fi
 	@codesign --force --sign - --timestamp=none $(APP) 2>/dev/null || true
 
-$(APPBIN): gui/LvolApp.swift gui/Info.plist
+$(APPBIN): gui/SoneApp.swift gui/Info.plist
 	@mkdir -p $(APP)/Contents/MacOS
-	swiftc $(SWIFTFLAGS) $(SWIFT_TARGET) -o $(APPBIN) gui/LvolApp.swift
+	swiftc $(SWIFTFLAGS) $(SWIFT_TARGET) -o $(APPBIN) gui/SoneApp.swift
 	@cp gui/Info.plist $(PLIST)
 
 # --------------------------------------------------------------- install
 
-install: lvol
+install: sone
 	install -d $(PREFIX)/bin
-	install -m 755 lvol $(PREFIX)/bin/lvol
+	install -m 755 sone $(PREFIX)/bin/sone
 
 install-gui: gui
 	mkdir -p "$(HOME)/Applications"
-	rm -rf "$(HOME)/Applications/lvol.app"
-	cp -R $(APP) "$(HOME)/Applications/lvol.app"
-	@echo "installed ~/Applications/lvol.app  (open it, or add it to Login Items)"
+	rm -rf "$(HOME)/Applications/Sone.app"
+	cp -R $(APP) "$(HOME)/Applications/Sone.app"
+	@echo "installed ~/Applications/Sone.app  (open it, or add it to Login Items)"
 
 uninstall:
-	rm -f $(PREFIX)/bin/lvol
+	rm -f $(PREFIX)/bin/sone
 
 uninstall-gui:
-	rm -rf "$(HOME)/Applications/lvol.app"
+	rm -rf "$(HOME)/Applications/Sone.app"
 
 clean:
-	rm -rf build lvol
+	rm -rf build sone
 
 .PHONY: all gui install install-gui uninstall uninstall-gui clean

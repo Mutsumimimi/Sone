@@ -1,9 +1,9 @@
 /*
- * lvol — a tiny desktop-window app for dB-uniform output volume.
+ * Sone — a tiny desktop-window app for dB-uniform output volume.
  *
  * It opens a single window holding a slider that drives the default output
  * device's floating-point volume scalar on a dB-uniform scale, so quiet levels
- * are as adjustable as loud ones. Mirrors the `lvol` CLI.
+ * are as adjustable as loud ones. Mirrors the `sone` CLI.
  *
  * The window is the main UI. A menu-bar extra (NSStatusItem) offers the common
  * actions: left-click reopens the window, right-click shows a menu. The app
@@ -25,7 +25,7 @@ let kDefaultRangeDB: Double = 60.0 /* level 0 -> -60 dB, level 100 -> 0 dB */
 
 /* The dB span the 0-100 scale covers. Stored in UserDefaults so the Settings
  * window can change it; falls back to the CLI's default when unset. Note the
- * CLI (lvol.c) is untouched - this is GUI-only state. */
+ * CLI (sone.c) is untouched - this is GUI-only state. */
 let kRangeDBKey = "rangeDB"
 
 var kRangeDB: Double {
@@ -128,11 +128,11 @@ func writeMute(_ dev: AudioDeviceID, _ on: Bool) {
 // ------------------------------------------------------------------
 
 func diag(_ msg: String) {
-    FileHandle.standardError.write(Data("lvol-diag: \(msg)\n".utf8))
+    FileHandle.standardError.write(Data("sone-diag: \(msg)\n".utf8))
 }
 
 // ------------------------------------------------------------------
-// perceptual <-> amplitude mapping (same as the lvol CLI)
+// perceptual <-> amplitude mapping (same as the sone CLI)
 // ------------------------------------------------------------------
 
 func levelToScalar(_ level: Double) -> Float32 {
@@ -350,7 +350,7 @@ func systemKeyRepeatIntervals() -> (delay: TimeInterval, interval: TimeInterval)
  * (1 = up, 2 = down) and every kEventHotKeyReleased to that id's repeat
  * stopper. Holding a key fires once, then repeats on a timer until release. */
 final class HotKeyManager {
-    private static let signature = OSType(0x6C_76_6F_6C) /* 'lvol' */
+    private static let signature = OSType(0x73_6F_6E_65) /* 'sone' */
 
     private var refs: [EventHotKeyRef] = []
     private var handlerRef: EventHandlerRef?
@@ -1061,7 +1061,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 214),
                            styleMask: [.titled, .closable, .miniaturizable],
                            backing: .buffered, defer: false)
-        win.title = "lvol"
+        win.title = "Sone"
         win.contentViewController = vc
         win.isReleasedWhenClosed = false
         win.center()
@@ -1185,7 +1185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(.separator())
         appMenu.addItem(settingsItem)
 
-        let quitItem = NSMenuItem(title: "Quit " + ProcessInfo.processInfo.processName,
+        let quitItem = NSMenuItem(title: "Quit Sone",
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
         quitItem.keyEquivalentModifierMask = [.command] /* the default, made explicit */
@@ -1217,7 +1217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 248),
                                styleMask: [.titled, .closable],
                                backing: .buffered, defer: false)
-            win.title = "lvol Settings"
+            win.title = "Sone Settings"
             let svc = SettingsViewController()
             /* Re-render the main window with the new range, if it is open. */
             svc.onChange = { [weak self] in self?.vc.refresh() }
@@ -1298,7 +1298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 214),
                                styleMask: [.titled, .closable, .miniaturizable],
                                backing: .buffered, defer: false)
-            win.title = "lvol"
+            win.title = "Sone"
             win.contentViewController = vc
             win.isReleasedWhenClosed = false
             win.center()
@@ -1358,7 +1358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Quit lvol",
+        let quitItem = NSMenuItem(title: "Quit Sone",
                                   action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quitItem.keyEquivalentModifierMask = [.command]
         menu.addItem(quitItem)
@@ -1402,16 +1402,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // ------------------------------------------------------------------
-// headless use / self-test:  lvol.app/Contents/MacOS/LvolApp --get
-//                            LvolApp --set <0-100>
+// headless use / self-test:  Sone.app/Contents/MacOS/SoneApp --get
+//                            SoneApp --set <0-100>
 // ------------------------------------------------------------------
 
 func printUsage(_ to: FileHandle) {
     let text = """
     usage:
-      LvolApp --get            print the current output volume
-      LvolApp --set <0-100>    set the perceptual level (dB-uniform, 0-100)
-      LvolApp -h, --help       show this help
+      SoneApp --get            print the current output volume
+      SoneApp --set <0-100>    set the perceptual level (dB-uniform, 0-100)
+      SoneApp -h, --help       show this help
 
     With no arguments the desktop window opens instead.
     """
@@ -1435,7 +1435,7 @@ if cliArgs.contains("--get") {
 }
 if let i = cliArgs.firstIndex(of: "--set") {
     guard i + 1 < cliArgs.count, let lv = Double(cliArgs[i + 1]) else {
-        FileHandle.standardError.write(Data("lvol: --set needs a number 0-100 (see --help)\n".utf8))
+        FileHandle.standardError.write(Data("sone: --set needs a number 0-100 (see --help)\n".utf8))
         exit(2)
     }
     let d = defaultOutput()

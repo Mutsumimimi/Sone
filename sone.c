@@ -1,13 +1,13 @@
 /*
- * lvol — dB-uniform output volume control for macOS.
+ * Sone — dB-uniform output volume control for macOS.
  *
  * Why: the macOS volume slider is (very close to) LINEAR in amplitude.
  * Near the bottom, one percentage step is a huge jump in perceived loudness,
- * so it is impossible to fine-tune quiet levels. lvol exposes a perceptual
+ * so it is impossible to fine-tune quiet levels. sone exposes a perceptual
  * (dB) scale and drives the device's floating-point volume scalar directly,
  * which also reaches levels far below the lowest non-zero slider position.
  *
- * Build:  clang -O2 -o lvol lvol.c -framework CoreAudio -framework AudioToolbox
+ * Build:  clang -O2 -o sone sone.c -framework CoreAudio -framework AudioToolbox
  * License: MIT
  */
 
@@ -269,15 +269,15 @@ static double scalar_to_db(Float32 scalar) {
 
 static void usage(void) {
     printf(
-        "lvol — dB-uniform output volume for macOS\n"
+        "Sone — dB-uniform output volume for macOS\n"
         "\n"
         "usage:\n"
-        "  lvol                     show current volume\n"
-        "  lvol <0-100>             set perceptual level (equal steps = equal dB)\n"
-        "  lvol +N | -N             raise / lower level by N (relative)\n"
-        "  lvol <dB>dB              set absolute gain, e.g. -30dB (0dB = max)\n"
-        "  lvol mute | unmute       toggle mute\n"
-        "  lvol list                list output devices\n"
+        "  sone                     show current volume\n"
+        "  sone <0-100>             set perceptual level (equal steps = equal dB)\n"
+        "  sone +N | -N             raise / lower level by N (relative)\n"
+        "  sone <dB>dB              set absolute gain, e.g. -30dB (0dB = max)\n"
+        "  sone mute | unmute       toggle mute\n"
+        "  sone list                list output devices\n"
         "\n"
         "options:\n"
         "  -d, --device <name>      target device by (substring) name\n"
@@ -285,7 +285,7 @@ static void usage(void) {
         "  -h, --help               this help\n"
         "\n"
         "The macOS slider is linear in amplitude, so its low end is coarse.\n"
-        "lvol uses a dB scale and writes the device's float volume scalar,\n"
+        "sone uses a dB scale and writes the device's float volume scalar,\n"
         "reaching levels the slider cannot.\n",
         DEFAULT_RANGE_DB);
 }
@@ -304,18 +304,18 @@ int main(int argc, char **argv) {
             usage();
             return 0;
         } else if (!strcmp(a, "-d") || !strcmp(a, "--device")) {
-            if (i + 1 >= argc) { fprintf(stderr, "lvol: -d needs a device name\n"); return 2; }
+            if (i + 1 >= argc) { fprintf(stderr, "sone: -d needs a device name\n"); return 2; }
             device_sel = argv[++i];
         } else if (!strcmp(a, "-r") || !strcmp(a, "--range")) {
-            if (i + 1 >= argc) { fprintf(stderr, "lvol: -r needs a number\n"); return 2; }
+            if (i + 1 >= argc) { fprintf(stderr, "sone: -r needs a number\n"); return 2; }
             range_db = atof(argv[++i]);
-            if (range_db <= 0) { fprintf(stderr, "lvol: range must be > 0\n"); return 2; }
+            if (range_db <= 0) { fprintf(stderr, "sone: range must be > 0\n"); return 2; }
         } else if (!strcmp(a, "list") || !strcmp(a, "--list")) {
             do_list = 1;
         } else if (!value) {
             value = a;
         } else {
-            fprintf(stderr, "lvol: unexpected argument '%s'\n", a);
+            fprintf(stderr, "sone: unexpected argument '%s'\n", a);
             return 2;
         }
     }
@@ -330,16 +330,16 @@ int main(int argc, char **argv) {
         int ambiguous = 0;
         dev = find_output_by_name(device_sel, &ambiguous);
         if (dev == kAudioObjectUnknown) {
-            fprintf(stderr, "lvol: no output device matching '%s'\n", device_sel);
+            fprintf(stderr, "sone: no output device matching '%s'\n", device_sel);
             return 1;
         }
         if (ambiguous)
-            fprintf(stderr, "lvol: warning: several devices match '%s', using first\n",
+            fprintf(stderr, "sone: warning: several devices match '%s', using first\n",
                     device_sel);
     } else {
         dev = default_output();
         if (dev == kAudioObjectUnknown) {
-            fprintf(stderr, "lvol: no default output device\n");
+            fprintf(stderr, "sone: no default output device\n");
             return 1;
         }
     }
@@ -352,7 +352,7 @@ int main(int argc, char **argv) {
         Float32 s = 0;
         UInt32 muted = 0;
         if (!read_volume(dev, &s)) {
-            fprintf(stderr, "lvol: cannot read volume of '%s'\n", dname);
+            fprintf(stderr, "sone: cannot read volume of '%s'\n", dname);
             return 1;
         }
         read_mute(dev, &muted);
@@ -365,7 +365,7 @@ int main(int argc, char **argv) {
 
     /* ---- mute ---- */
     if (!strcmp(value, "mute")) {
-        if (!write_mute(dev, 1)) { fprintf(stderr, "lvol: mute not supported\n"); return 1; }
+        if (!write_mute(dev, 1)) { fprintf(stderr, "sone: mute not supported\n"); return 1; }
         printf("%s: muted\n", dname);
         return 0;
     }
@@ -392,7 +392,7 @@ int main(int argc, char **argv) {
         target = (Float32)s;
     } else if (value[0] == '+' || value[0] == '-') {
         Float32 cur = 0;
-        if (!read_volume(dev, &cur)) { fprintf(stderr, "lvol: cannot read current volume\n"); return 1; }
+        if (!read_volume(dev, &cur)) { fprintf(stderr, "sone: cannot read current volume\n"); return 1; }
         double cur_level = scalar_to_level(cur, range_db);
         double delta = atof(value); /* includes sign */
         double new_level = cur_level + delta;
@@ -403,14 +403,14 @@ int main(int argc, char **argv) {
         char *end = NULL;
         double lv = strtod(value, &end);
         if (end == value) {
-            fprintf(stderr, "lvol: invalid value '%s' (see --help)\n", value);
+            fprintf(stderr, "sone: invalid value '%s' (see --help)\n", value);
             return 2;
         }
         target = level_to_scalar(lv, range_db);
     }
 
     if (!write_volume(dev, target)) {
-        fprintf(stderr, "lvol: cannot set volume of '%s'\n", dname);
+        fprintf(stderr, "sone: cannot set volume of '%s'\n", dname);
         return 1;
     }
 
