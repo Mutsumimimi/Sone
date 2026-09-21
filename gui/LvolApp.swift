@@ -321,6 +321,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitItem.keyEquivalentModifierMask = [.command] /* the default, made explicit */
         appMenu.addItem(quitItem)
 
+        /* A File menu carrying the Close item, per the usual macOS layout.
+         * AppKit routes Cmd+W through the main menu to -[NSWindow performClose:],
+         * so without a menu item holding that shortcut the window never closes.
+         * target stays nil so the key window handles it via the responder chain. */
+        let fileMenuItem = NSMenuItem()
+        mainMenu.addItem(fileMenuItem)
+
+        let fileMenu = NSMenu(title: "File")
+        fileMenuItem.submenu = fileMenu
+
+        let closeItem = NSMenuItem(title: "Close",
+                                   action: #selector(NSWindow.performClose(_:)),
+                                   keyEquivalent: "w")
+        closeItem.keyEquivalentModifierMask = [.command] /* the default, made explicit */
+        fileMenu.addItem(closeItem)
+
         NSApp.mainMenu = mainMenu
     }
 
