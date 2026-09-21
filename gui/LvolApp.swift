@@ -360,8 +360,21 @@ final class HotKeyManager {
      * and down keys never interfere with each other, plus the delay/interval
      * in effect (re-read from NSGlobalDomain on every re-bind). */
     private var repeatTimers: [UInt32: Timer] = [:]
+    /* Monotonic start time of each id's in-flight repeat, keyed the same as
+     * repeatTimers. systemUptime can't go backwards on a wall-clock change, so
+     * the watchdog below can never fire early after a time adjustment. */
+    private var repeatStart: [UInt32: TimeInterval] = [:]
     private var repeatDelay: TimeInterval = 0.4
     private var repeatInterval: TimeInterval = 0.05
+
+    /* Hard ceiling on how long one held key may keep repeating. If Carbon's
+     * "released" event is ever dropped - e.g. the menu bar is opened while the
+     * hot key is held, moving the main thread into an event-tracking run-loop
+     * mode that swallows the release - the 30 Hz repeat timer would otherwise
+     * spin forever, stepping the volume long after it hit 0 or 100. At 30/s x
+     * 60 steps this ceiling spans far beyond the whole 0-100 range, so no
+     * genuine hold (a few seconds at most) can ever reach it. */
+    private static let maxRepeatDuration: TimeInterval = 10.0
 
     /* The last pair that registered cleanly. Kept so a failed re-bind can be
      * rolled back to a working state instead of silently leaving the user
@@ -500,17 +513,24 @@ final class HotKeyManager {
         /* A lost "released" would leave a stale timer behind; drop any first so
          * repeats can never stack up. */
         stopRepeat(id: id)
-        let delayTimer = Timer.scheduledTimer(withTimeInterval: repeatDelay,
-                                              repeats: false) { [weak self] _ in
+        /* Stamp the monotonic start time for this press; the watchdog measures
+         * from here. Done after stopRepeat so it can't read a stale stamp. */
+        repeatStart[id] = ProcessInfo.processInfo.systemUptime
+        /* Build the timers manually and add them to .common rather than using a
+         * scheduledTimer (which is pre-added to .default only, so the repeat
+         * would pause while the main loop sits in a modal/tracking mode, e.g.
+         * with a menu open). Adding manually also avoids double-firing. */
+        let delayTimer = Timer(timeInterval: repeatDelay, repeats: false) { [weak self] _ in
             guard let self, self.actions[id] != nil else { self?.stopRepeat(id: id); return }
             self.repeatTick(id: id)
             /* Switch to the steady interval once the first repeat has fired. */
-            let steady = Timer.scheduledTimer(withTimeInterval: self.repeatInterval,
-                                              repeats: true) { [weak self] _ in
+            let steady = Timer(timeInterval: self.repeatInterval, repeats: true) { [weak self] _ in
                 self?.repeatTick(id: id)
             }
+            RunLoop.main.add(steady, forMode: .common)
             self.repeatTimers[id] = steady
         }
+        RunLoop.main.add(delayTimer, forMode: .common)
         repeatTimers[id] = delayTimer
     }
 
@@ -522,16 +542,29 @@ final class HotKeyManager {
     /* One repeat step, guarded: if the id is no longer registered, stop. */
     private func repeatTick(id: UInt32) {
         guard let action = actions[id] else { stopRepeat(id: id); return }
+        /* Watchdog: if the matching "released" was lost, cut the repeat off
+         * instead of stepping the volume forever. The duration is measured from
+         * the monotonic press time; on expiry we stop *without* running the
+         * action so the volume can't take one more step past the ceiling. */
+        if let start = repeatStart[id],
+           ProcessInfo.processInfo.systemUptime - start > HotKeyManager.maxRepeatDuration {
+            diag("hotkey \(id == 1 ? "up" : "down") repeat hit maxRepeatDuration "
+                 + "(\(HotKeyManager.maxRepeatDuration)s); release likely lost, stopping")
+            stopRepeat(id: id)
+            return
+        }
         action()
     }
 
     private func stopRepeat(id: UInt32) {
         repeatTimers.removeValue(forKey: id)?.invalidate()
+        repeatStart.removeValue(forKey: id)
     }
 
     private func stopAllRepeats() {
         for (_, t) in repeatTimers { t.invalidate() }
         repeatTimers.removeAll()
+        repeatStart.removeAll()
     }
 }
 
